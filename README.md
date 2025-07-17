@@ -1,3 +1,6 @@
+# Facebook-scrapper
+Facebook-scrapper-for-RAG
+
 # Facebook Group Post Scraper
 
 A Chrome extension that scrapes visible posts, comments, and images from Facebook Groups and sends data to n8n for storage and analysis.
