@@ -1,0 +1,270 @@
+{
+  "name": "Facebook Group Scraper Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "webhook/fb-group-posts",
+        "responseMode": "responseNode",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              },
+              {
+                "name": "Access-Control-Allow-Methods",
+                "value": "POST, OPTIONS"
+              },
+              {
+                "name": "Access-Control-Allow-Headers",
+                "value": "Content-Type"
+              }
+            ]
+          }
+        }
+      },
+      "id": "webhook-node",
+      "name": "Facebook Scraper Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "fb-group-posts-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Data validation and normalization\nconst inputData = $input.all()[0].json;\n\n// Validate incoming data structure\nif (!inputData.posts || !Array.isArray(inputData.posts)) {\n  throw new Error('Invalid data structure: posts array missing');\n}\n\nif (!inputData.groupUrl || !inputData.groupUrl.includes('facebook.com/groups/')) {\n  throw new Error('Invalid group URL');\n}\n\n// Normalize and clean data\nconst normalizedData = {\n  scraping_timestamp: inputData.timestamp || new Date().toISOString(),\n  group_url: inputData.groupUrl,\n  group_name: inputData.groupName || 'Unknown Group',\n  group_id: inputData.groupId || 'unknown',\n  posts: inputData.posts.map((post, index) => ({\n    post_id: post.postId || `post_${index}_${Date.now()}`,\n    content: post.text || '',\n    comments_count: post.comments ? post.comments.length : 0,\n    comments: post.comments || [],\n    images_count: post.images ? post.images.length : 0,\n    images: post.images || [],\n    post_timestamp: post.timestamp || new Date().toISOString(),\n    author: post.author || 'Unknown'\n  })),\n  summary: {\n    total_posts: inputData.posts.length,\n    total_comments: inputData.posts.reduce((sum, post) => sum + (post.comments ? post.comments.length : 0), 0),\n    total_images: inputData.posts.reduce((sum, post) => sum + (post.images ? post.images.length : 0), 0)\n  },\n  metadata: inputData.metadata || {}\n};\n\n// Add processing timestamp\nnormalizedData.processing_timestamp = new Date().toISOString();\n\nreturn normalizedData;"
+      },
+      "id": "data-transformation-node",
+      "name": "Transform & Validate Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms",
+        "sheetName": "Facebook Posts",
+        "options": {
+          "valueInputMode": "RAW"
+        }
+      },
+      "id": "google-sheets-node",
+      "name": "Store in Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [680, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-credentials",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "facebook_posts",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "scraping_timestamp": "={{ $json.scraping_timestamp }}",
+            "group_url": "={{ $json.group_url }}",
+            "group_name": "={{ $json.group_name }}",
+            "group_id": "={{ $json.group_id }}",
+            "post_id": "={{ $json.posts[0].post_id }}",
+            "content": "={{ $json.posts[0].content }}",
+            "comments": "={{ JSON.stringify($json.posts[0].comments) }}",
+            "images": "={{ JSON.stringify($json.posts[0].images) }}",
+            "post_timestamp": "={{ $json.posts[0].post_timestamp }}",
+            "author": "={{ $json.posts[0].author }}",
+            "comments_count": "={{ $json.posts[0].comments_count }}",
+            "images_count": "={{ $json.posts[0].images_count }}"
+          }
+        }
+      },
+      "id": "postgres-node",
+      "name": "Store in PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.4,
+      "position": [680, 500],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL Database"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Optional GPT Analysis\nconst posts = $input.all()[0].json.posts;\n\nif (!posts || posts.length === 0) {\n  return { posts: [], analysis: 'No posts to analyze' };\n}\n\n// Analyze first few posts to avoid rate limits\nconst postsToAnalyze = posts.slice(0, 3);\nconst analysisResults = [];\n\nfor (const post of postsToAnalyze) {\n  const prompt = `Analyze this Facebook group post and provide insights:\n\nPost: \"${post.content}\"\nComments: ${post.comments.join(', ')}\n\nPlease provide:\n1. Sentiment (positive/negative/neutral)\n2. Key topics mentioned\n3. User sentiment summary\n4. Actionable insights\n\nFormat as JSON with keys: sentiment, topics, summary, insights`;\n\n  try {\n    const analysis = await $openai.complete({\n      model: 'gpt-3.5-turbo',\n      messages: [{ role: 'user', content: prompt }],\n      max_tokens: 300,\n      temperature: 0.3\n    });\n\n    analysisResults.push({\n      post_id: post.post_id,\n      analysis: analysis.choices[0].message.content\n    });\n  } catch (error) {\n    console.error('GPT analysis error:', error);\n    analysisResults.push({\n      post_id: post.post_id,\n      analysis: 'Analysis failed'\n    });\n  }\n}\n\nreturn { \n  posts: analysisResults,\n  total_analyzed: analysisResults.length,\n  analysis_timestamp: new Date().toISOString()\n};"
+      },
+      "id": "gpt-analysis-node",
+      "name": "GPT Analysis (Optional)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Data processed successfully\",\n  \"timestamp\": new Date().toISOString(),\n  \"data\": {\n    \"posts_processed\": $json.summary.total_posts,\n    \"comments_processed\": $json.summary.total_comments,\n    \"images_processed\": $json.summary.total_images\n  }\n}"
+      },
+      "id": "response-node",
+      "name": "Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 400,
+        "responseBody": "={\n  \"success\": false,\n  \"error\": $json.message,\n  \"timestamp\": new Date().toISOString()\n}"
+      },
+      "id": "error-response-node",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1120, 500]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equal"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "success-check-node",
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 500]
+    }
+  ],
+  "connections": {
+    "Facebook Scraper Webhook": {
+      "main": [
+        [
+          {
+            "node": "Transform & Validate Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform & Validate Data": {
+      "main": [
+        [
+          {
+            "node": "Store in Google Sheets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Store in PostgreSQL",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Google Sheets": {
+      "main": [
+        [
+          {
+            "node": "GPT Analysis (Optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "GPT Analysis (Optional)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT Analysis (Optional)": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "main": [
+        [
+          {
+            "node": "Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z",
+      "id": "facebook-scraper",
+      "name": "Facebook Scraper"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1"
+} 

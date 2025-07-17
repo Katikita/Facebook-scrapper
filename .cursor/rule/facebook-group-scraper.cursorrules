@@ -1,0 +1,507 @@
+# Facebook Group Post Scraper Project Rules
+
+## Project Overview
+This is a Facebook Group Post Scraper project consisting of a Chrome Extension (Manifest V3) and n8n workflow integration. The system scrapes visible posts, comments, and images from Facebook Groups and sends data to n8n for storage and analysis.
+
+## Architecture Components
+
+### Chrome Extension (Manifest V3)
+- **manifest.json** - Extension configuration and permissions
+- **popup.html/js** - User interface for triggering scraping
+- **content.js** - DOM scraping logic
+- **background.js** - Service worker for data transmission
+- **utils/** - Helper functions and data processing
+
+### n8n Workflow
+- **Webhook Node** - Receives scraped data
+- **Function Node** - Data normalization and validation
+- **Storage Nodes** - Google Sheets/Postgres integration
+- **OpenAI Node** - Optional GPT analysis
+- **Error Handling** - Alert and notification nodes
+
+## Code Style & Structure
+
+### JavaScript/TypeScript Best Practices
+- Use ES6+ features and async/await
+- Follow consistent naming conventions (camelCase for variables/functions)
+- Implement proper error handling with try-catch blocks
+- Use TypeScript for better type safety (recommended)
+- Add JSDoc comments for all functions
+- Use meaningful variable names that reflect Facebook DOM elements
+
+### Project Structure
+```
+facebook-group-scraper/
+├── chrome-extension/
+│   ├── manifest.json
+│   ├── popup.html
+│   ├── popup.js
+│   ├── content.js
+│   ├── background.js
+│   ├── utils/
+│   │   ├── scraper.js
+│   │   ├── dataProcessor.js
+│   │   └── webhookSender.js
+│   └── assets/
+├── n8n-workflows/
+│   ├── facebook-scraper-workflow.json
+│   ├── data-transformation.js
+│   └── gpt-analysis.js
+├── docs/
+├── tests/
+└── README.md
+```
+
+## Chrome Extension Development
+
+### Manifest V3 Requirements
+```json
+{
+  "manifest_version": 3,
+  "name": "Facebook Group Scraper",
+  "version": "1.0.0",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://facebook.com/groups/*"
+  ],
+  "content_scripts": [{
+    "matches": ["https://facebook.com/groups/*"],
+    "js": ["content.js"]
+  }],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
+```
+
+### DOM Scraping Guidelines
+
+#### Target Selectors
+- **Posts**: `[data-ad-preview="message"]` or `[data-testid="post_message"]`
+- **Comments**: `[aria-label="Comment"]` or `[data-testid="comment"]`
+- **Images**: `img[src*="scontent"]` (Facebook CDN images)
+- **Post containers**: `[data-testid="post_container"]`
+
+#### Scraping Best Practices
+```javascript
+// Example scraping function
+async function scrapeVisiblePosts() {
+  const posts = [];
+  
+  // Use specific selectors for reliability
+  const postElements = document.querySelectorAll('[data-testid="post_container"]');
+  
+  for (const post of postElements) {
+    try {
+      const postData = {
+        text: extractPostText(post),
+        comments: extractVisibleComments(post),
+        images: extractImageUrls(post),
+        timestamp: extractTimestamp(post),
+        postId: extractPostId(post)
+      };
+      
+      if (postData.text || postData.comments.length > 0) {
+        posts.push(postData);
+      }
+    } catch (error) {
+      console.error('Error scraping post:', error);
+    }
+  }
+  
+  return posts;
+}
+
+function extractPostText(postElement) {
+  const textElement = postElement.querySelector('[data-ad-preview="message"]');
+  return textElement ? textElement.textContent.trim() : '';
+}
+
+function extractVisibleComments(postElement) {
+  const comments = [];
+  const commentElements = postElement.querySelectorAll('[aria-label="Comment"]');
+  
+  commentElements.forEach(comment => {
+    const commentText = comment.textContent.trim();
+    if (commentText) {
+      comments.push(commentText);
+    }
+  });
+  
+  return comments;
+}
+
+function extractImageUrls(postElement) {
+  const images = [];
+  const imgElements = postElement.querySelectorAll('img[src*="scontent"]');
+  
+  imgElements.forEach(img => {
+    if (img.src && img.src.includes('scontent')) {
+      images.push(img.src);
+    }
+  });
+  
+  return images;
+}
+```
+
+### Data Processing & Validation
+
+#### Data Structure
+```javascript
+const scrapedData = {
+  timestamp: new Date().toISOString(),
+  groupUrl: window.location.href,
+  groupName: extractGroupName(),
+  posts: [
+    {
+      postId: "unique_post_id",
+      text: "Post content...",
+      comments: ["Comment 1", "Comment 2"],
+      images: ["https://scontent...", "https://scontent..."],
+      timestamp: "2024-01-01T12:00:00Z",
+      author: "Author Name" // if available
+    }
+  ],
+  metadata: {
+    totalPosts: 0,
+    totalComments: 0,
+    totalImages: 0,
+    scrapingDuration: 0
+  }
+};
+```
+
+#### Data Validation
+```javascript
+function validateScrapedData(data) {
+  const errors = [];
+  
+  if (!data.posts || !Array.isArray(data.posts)) {
+    errors.push('Posts array is missing or invalid');
+  }
+  
+  if (!data.groupUrl || !data.groupUrl.includes('facebook.com/groups/')) {
+    errors.push('Invalid group URL');
+  }
+  
+  data.posts.forEach((post, index) => {
+    if (!post.postId) {
+      errors.push(`Post ${index} missing postId`);
+    }
+    if (!post.text && post.comments.length === 0 && post.images.length === 0) {
+      errors.push(`Post ${index} has no content`);
+    }
+  });
+  
+  return errors;
+}
+```
+
+### Webhook Integration
+
+#### Data Transmission
+```javascript
+async function sendToWebhook(data, webhookUrl) {
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data)
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
+    const result = await response.json();
+    return { success: true, data: result };
+  } catch (error) {
+    console.error('Webhook error:', error);
+    return { success: false, error: error.message };
+  }
+}
+```
+
+## n8n Workflow Development
+
+### Webhook Node Configuration
+- **HTTP Method**: POST
+- **Response Mode**: Respond to Webhook
+- **Authentication**: Optional API key for security
+- **Response Headers**: CORS headers for Chrome extension
+
+### Data Transformation Function
+```javascript
+// n8n Function Node
+const inputData = $input.all()[0].json;
+
+// Validate incoming data
+if (!inputData.posts || !Array.isArray(inputData.posts)) {
+  throw new Error('Invalid data structure: posts array missing');
+}
+
+// Normalize and clean data
+const normalizedData = {
+  scraping_timestamp: inputData.timestamp,
+  group_url: inputData.groupUrl,
+  group_name: inputData.groupName,
+  posts: inputData.posts.map(post => ({
+    post_id: post.postId,
+    content: post.text || '',
+    comments_count: post.comments.length,
+    comments: post.comments,
+    images_count: post.images.length,
+    images: post.images,
+    post_timestamp: post.timestamp,
+    author: post.author || 'Unknown'
+  })),
+  summary: {
+    total_posts: inputData.posts.length,
+    total_comments: inputData.posts.reduce((sum, post) => sum + post.comments.length, 0),
+    total_images: inputData.posts.reduce((sum, post) => sum + post.images.length, 0)
+  }
+};
+
+return normalizedData;
+```
+
+### Storage Integration
+
+#### Google Sheets
+- Use Google Sheets node with proper authentication
+- Structure data in columns: Timestamp, Group, Post ID, Content, Comments, Images, Author
+- Handle large datasets with pagination
+
+#### PostgreSQL
+```sql
+-- Table structure
+CREATE TABLE facebook_posts (
+  id SERIAL PRIMARY KEY,
+  scraping_timestamp TIMESTAMP,
+  group_url TEXT,
+  group_name TEXT,
+  post_id TEXT,
+  content TEXT,
+  comments JSONB,
+  images JSONB,
+  post_timestamp TIMESTAMP,
+  author TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_facebook_posts_group_url ON facebook_posts(group_url);
+CREATE INDEX idx_facebook_posts_post_id ON facebook_posts(post_id);
+```
+
+### GPT Analysis Integration
+```javascript
+// n8n OpenAI Function Node
+const posts = $input.all()[0].json.posts;
+
+const analysisResults = [];
+
+for (const post of posts) {
+  const prompt = `
+    Analyze this Facebook group post and provide insights:
+    
+    Post: "${post.content}"
+    Comments: ${post.comments.join(', ')}
+    
+    Please provide:
+    1. Sentiment (positive/negative/neutral)
+    2. Key topics mentioned
+    3. User sentiment summary
+    4. Actionable insights
+  `;
+  
+  const analysis = await $openai.complete({
+    model: 'gpt-3.5-turbo',
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 200
+  });
+  
+  analysisResults.push({
+    post_id: post.post_id,
+    analysis: analysis.choices[0].message.content
+  });
+}
+
+return { posts: analysisResults };
+```
+
+## Error Handling & User Experience
+
+### Chrome Extension Error Handling
+```javascript
+// Popup error handling
+function showUserFeedback(success, message) {
+  const statusElement = document.getElementById('status');
+  const buttonElement = document.getElementById('scrapeButton');
+  
+  if (success) {
+    statusElement.textContent = `✅ ${message}`;
+    statusElement.className = 'success';
+  } else {
+    statusElement.textContent = `❌ ${message}`;
+    statusElement.className = 'error';
+  }
+  
+  buttonElement.disabled = false;
+}
+
+// Content script error handling
+function handleScrapingError(error) {
+  console.error('Scraping error:', error);
+  
+  // Send error to background script for user notification
+  chrome.runtime.sendMessage({
+    action: 'scrapingError',
+    error: error.message
+  });
+}
+```
+
+### n8n Error Handling
+- Implement error nodes for failed webhook requests
+- Use notification nodes for alerting on failures
+- Log errors to external monitoring service
+- Implement retry logic for transient failures
+
+## Performance & Optimization
+
+### Chrome Extension Performance
+- Implement debouncing for rapid user interactions
+- Use efficient DOM selectors (avoid deep nesting)
+- Limit scraping to visible content only
+- Implement progress indicators for long operations
+- Cache DOM queries where possible
+
+### n8n Workflow Optimization
+- Use batch processing for large datasets
+- Implement data deduplication
+- Use efficient storage queries
+- Monitor workflow execution times
+- Implement proper error recovery
+
+## Security & Privacy
+
+### Data Protection
+- Never store Facebook login credentials
+- Implement data anonymization where possible
+- Use secure webhook endpoints
+- Validate all incoming data
+- Implement rate limiting on webhook endpoints
+
+### Facebook Terms Compliance
+- Only scrape publicly visible content
+- Respect user privacy settings
+- Don't bypass any access controls
+- Implement reasonable delays between requests
+- Monitor for changes in Facebook's structure
+
+## Testing Strategy
+
+### Chrome Extension Testing
+```javascript
+// Unit tests for scraping functions
+describe('Facebook Scraper', () => {
+  test('should extract post text correctly', () => {
+    const mockPost = createMockPostElement();
+    const text = extractPostText(mockPost);
+    expect(text).toBe('Expected post text');
+  });
+  
+  test('should handle missing elements gracefully', () => {
+    const emptyPost = document.createElement('div');
+    const text = extractPostText(emptyPost);
+    expect(text).toBe('');
+  });
+});
+```
+
+### n8n Workflow Testing
+- Test webhook endpoint with sample data
+- Validate data transformation logic
+- Test storage integration
+- Verify error handling scenarios
+- Test GPT analysis integration
+
+## Deployment & Configuration
+
+### Chrome Extension Deployment
+1. Load unpacked extension in Chrome developer mode
+2. Configure webhook URL in popup settings
+3. Test on Facebook group pages
+4. Package for distribution (optional)
+
+### n8n Workflow Deployment
+1. Import workflow JSON into n8n
+2. Configure webhook URL and authentication
+3. Set up storage connections (Google Sheets/Postgres)
+4. Configure OpenAI API key (if using GPT analysis)
+5. Test end-to-end data flow
+
+## Monitoring & Analytics
+
+### Success Metrics Tracking
+- Scraping success rate (>90% target)
+- Data completeness (>80% target)
+- Processing time (<5 seconds target)
+- User feedback and satisfaction
+
+### Logging & Debugging
+```javascript
+// Comprehensive logging
+const logger = {
+  info: (message, data) => {
+    console.log(`[INFO] ${message}`, data);
+    // Send to external logging service
+  },
+  error: (message, error) => {
+    console.error(`[ERROR] ${message}`, error);
+    // Send to error tracking service
+  },
+  warn: (message, data) => {
+    console.warn(`[WARN] ${message}`, data);
+  }
+};
+```
+
+## Future Enhancements
+
+### Planned Features
+- Auto-scroll functionality for multiple pages
+- Post author and timestamp extraction
+- Sentiment analysis dashboard
+- Export to multiple formats
+- Integration with other social platforms
+
+### Scalability Considerations
+- Implement queue system for large datasets
+- Use cloud storage for image caching
+- Implement user management and quotas
+- Add real-time data streaming capabilities
+
+## Code Quality Standards
+
+### Linting & Formatting
+- Use ESLint for JavaScript/TypeScript
+- Prettier for code formatting
+- Husky for pre-commit hooks
+- Consistent code style across all files
+
+### Documentation
+- README with setup instructions
+- API documentation for webhook endpoints
+- Code comments for complex logic
+- User guide for extension usage
+- Troubleshooting guide for common issues 

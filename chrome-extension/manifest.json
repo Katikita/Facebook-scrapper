@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Facebook Group Post Scraper",
+  "version": "1.0.0",
+  "description": "Scrape visible posts, comments, and images from Facebook Groups and send to n8n webhook",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "storage",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://facebook.com/groups/*",
+    "https://www.facebook.com/groups/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://facebook.com/groups/*",
+        "https://www.facebook.com/groups/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Facebook Group Scraper",
+    "default_icon": {
+      "16": "assets/icon16.png",
+      "48": "assets/icon48.png",
+      "128": "assets/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "assets/icon16.png",
+    "48": "assets/icon48.png",
+    "128": "assets/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/*"],
+      "matches": ["https://facebook.com/*"]
+    }
+  ]
+} 
