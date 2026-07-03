@@ -8,11 +8,14 @@ console.log('Facebook Group Scraper content script loaded');
 class FacebookGroupScraper {
     constructor() {
         this.isScraping = false;
+        this.selectedPostsMap = new Map(); // Persist selected post data
         this.init();
     }
 
     init() {
         this.bindMessageListener();
+        this.injectSelectionUI(); // Add selection UI on load
+        this.observeNewPosts(); // Watch for new posts loaded dynamically
         console.log('Facebook Group Scraper: Content script loaded');
     }
 
@@ -171,21 +174,8 @@ class FacebookGroupScraper {
     }
 
     getPostElements() {
-        // Multiple selectors to catch different Facebook layouts
-        const selectors = [
-            '[data-testid="post_container"]',
-            '[data-ad-preview="message"]',
-            'div[role="article"]',
-            '.userContent'
-        ];
-
-        let elements = [];
-        for (const selector of selectors) {
-            elements = document.querySelectorAll(selector);
-            if (elements.length > 0) break;
-        }
-
-        return Array.from(elements);
+        // Use only the most reliable selector for Facebook posts
+        return Array.from(document.querySelectorAll('div[role="article"]'));
     }
 
     extractPostData(postElement) {
@@ -425,6 +415,121 @@ class FacebookGroupScraper {
             hash = hash & hash; // Convert to 32bit integer
         }
         return Math.abs(hash);
+    }
+
+    injectSelectionUI() {
+        // Add checkboxes to each post
+        const postElements = this.getPostElements();
+        postElements.forEach(post => {
+            if (!post.querySelector('.fb-scraper-checkbox')) {
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.className = 'fb-scraper-checkbox';
+                checkbox.style.position = 'absolute';
+                checkbox.style.top = '8px';
+                checkbox.style.left = '8px';
+                checkbox.style.zIndex = '9999';
+                // Restore checked state if already selected
+                const postId = this.extractPostId(post);
+                if (this.selectedPostsMap.has(postId)) {
+                    checkbox.checked = true;
+                    post.classList.add('fb-scraper-selected');
+                }
+                checkbox.addEventListener('change', (e) => {
+                    if (e.target.checked) {
+                        post.classList.add('fb-scraper-selected');
+                        // Scrape and store post data immediately
+                        try {
+                            const postData = this.extractPostData(post);
+                            if (postData && this.hasValidContent(postData)) {
+                                this.selectedPostsMap.set(postData.postId, postData);
+                            }
+                        } catch (err) {
+                            console.error('Error scraping selected post:', err);
+                        }
+                    } else {
+                        post.classList.remove('fb-scraper-selected');
+                        // Remove from map
+                        this.selectedPostsMap.delete(postId);
+                    }
+                });
+                post.style.position = 'relative';
+                post.prepend(checkbox);
+            }
+        });
+        // Add floating scrape button if not present
+        if (!document.getElementById('fb-scraper-scrape-selected')) {
+            const btn = document.createElement('button');
+            btn.id = 'fb-scraper-scrape-selected';
+            btn.textContent = 'Scrape Selected Posts';
+            btn.style.position = 'fixed';
+            btn.style.bottom = '32px';
+            btn.style.right = '32px';
+            btn.style.zIndex = '10000';
+            btn.style.padding = '12px 20px';
+            btn.style.background = '#4CAF50';
+            btn.style.color = 'white';
+            btn.style.border = 'none';
+            btn.style.borderRadius = '8px';
+            btn.style.fontWeight = 'bold';
+            btn.style.boxShadow = '0 2px 8px rgba(0,0,0,0.15)';
+            btn.style.cursor = 'pointer';
+            btn.style.fontSize = '16px';
+            btn.addEventListener('click', () => this.scrapeSelectedPosts());
+            document.body.appendChild(btn);
+        }
+        // Add style for selected posts
+        if (!document.getElementById('fb-scraper-style')) {
+            const style = document.createElement('style');
+            style.id = 'fb-scraper-style';
+            style.textContent = `
+                .fb-scraper-selected {
+                    outline: 3px solid #4CAF50 !important;
+                    background: rgba(76,175,80,0.08) !important;
+                }
+                .fb-scraper-checkbox {
+                    width: 18px; height: 18px;
+                }
+            `;
+            document.head.appendChild(style);
+        }
+    }
+
+    observeNewPosts() {
+        // Observe the main feed container for new posts
+        const feed = document.querySelector('[role="feed"]') || document.body;
+        const observer = new MutationObserver(() => {
+            this.injectSelectionUI();
+        });
+        observer.observe(feed, { childList: true, subtree: true });
+    }
+
+    scrapeSelectedPosts() {
+        const posts = Array.from(this.selectedPostsMap.values());
+        if (posts.length === 0) {
+            alert('Please select at least one post to scrape.');
+            return;
+        }
+        const groupInfo = this.extractGroupInfo();
+        const scrapedData = {
+            timestamp: new Date().toISOString(),
+            groupUrl: window.location.href,
+            groupName: groupInfo.name,
+            groupId: groupInfo.id,
+            posts: posts,
+            metadata: {
+                totalPosts: posts.length,
+                totalComments: posts.reduce((sum, post) => sum + post.comments.length, 0),
+                totalImages: posts.reduce((sum, post) => sum + post.images.length, 0),
+                scrapingDuration: 0
+            }
+        };
+        // Send to popup as if it was a normal scrape
+        chrome.runtime.sendMessage({
+            action: 'downloadScrapedData',
+            data: scrapedData
+        });
+        alert(`Scraped ${posts.length} selected post(s). Download from the extension popup.`);
     }
 }
 
